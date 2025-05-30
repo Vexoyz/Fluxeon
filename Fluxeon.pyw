@@ -2,7 +2,7 @@
 # Version: 1.0.0
 # https://raw.githubusercontent.com/Vexoyz/Fluxeon/main/Fluxeon.pyw
 
-FLUXEON_VERSION = "1.0.1"
+FLUXEON_VERSION = "1.0.0"
 
 import sys
 import os
