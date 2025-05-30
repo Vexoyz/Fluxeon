@@ -13,6 +13,9 @@ import shutil
 import zipfile
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QProgressBar, QPushButton, QMessageBox
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtGui import QFont, QIcon, QPixmap, QColor, QPalette
+from PyQt6.QtWidgets import QHBoxLayout, QSizePolicy, QSpacerItem
+from PyQt6.QtCore import QSize
 import threading
 import re
 import platform
@@ -219,26 +222,108 @@ class FluxeonUpdater(QWidget):
         super().__init__()
         self.launch_uri = launch_uri
         self.launch_target_is_launcher = launch_target_is_launcher
-        
+
+        # --- Modern UI Styling ---
         self.setWindowTitle(f"Fluxeon Bootstrapper v{FLUXEON_VERSION}")
-        self.setFixedSize(450, 200)
+        self.setFixedSize(480, 260)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        self.setStyleSheet("""
+            QWidget {
+                background: #23272e;
+                color: #f5f6fa;
+                font-family: 'Segoe UI', 'Arial', sans-serif;
+                font-size: 15px;
+            }
+            QLabel#HeaderLabel {
+                font-size: 22px;
+                font-weight: bold;
+                color: #00b894;
+                margin-bottom: 8px;
+            }
+            QLabel#StatusLabel {
+                font-size: 15px;
+                font-weight: 500;
+                color: #f5f6fa;
+            }
+            QLabel#ProgressLabel {
+                font-size: 13px;
+                color: #b2bec3;
+            }
+            QProgressBar {
+                border: 1px solid #636e72;
+                border-radius: 8px;
+                background: #2d3436;
+                height: 22px;
+                text-align: center;
+                font-size: 13px;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00b894, stop:1 #0984e3);
+                border-radius: 8px;
+            }
+            QPushButton {
+                background: #00b894;
+                color: #fff;
+                border: none;
+                border-radius: 7px;
+                padding: 7px 18px;
+                font-size: 15px;
+                font-weight: 500;
+                margin-top: 10px;
+            }
+            QPushButton:hover {
+                background: #0984e3;
+            }
+        """)
+
         layout = QVBoxLayout()
-        self.status_label = QLabel("Initializing...")
-        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(10)
+        layout.setContentsMargins(28, 22, 28, 22)
+
+        # Header area with icon and title
+        header_layout = QHBoxLayout()
+        # Placeholder for logo/icon (replace with your own QPixmap if available)
+        icon_label = QLabel()
+        icon_pix = QPixmap(48, 48)
+        icon_pix.fill(QColor("#00b894"))
+        icon_label.setPixmap(icon_pix)
+        icon_label.setFixedSize(48, 48)
+        header_layout.addWidget(icon_label)
+        header_title = QLabel("Fluxeon Bootstrapper")
+        header_title.setObjectName("HeaderLabel")
+        header_layout.addWidget(header_title)
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
+
+        # Status label
+        self.status_label = QLabel("Checking for updates...")
+        self.status_label.setObjectName("StatusLabel")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
+        # Progress label
         self.package_progress_label = QLabel("")
-        self.package_progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.package_progress_label.setObjectName("ProgressLabel")
+        self.package_progress_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self.package_progress_label.setWordWrap(True)
         layout.addWidget(self.package_progress_label)
 
+        # Progress bar
         self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
         layout.addWidget(self.progress_bar)
+
+        # Retry button
         self.retry_button = QPushButton("Retry")
         self.retry_button.clicked.connect(self.start_update_process)
         self.retry_button.setVisible(False)
         layout.addWidget(self.retry_button)
+
+        # Spacer to push content up
+        layout.addItem(QSpacerItem(20, 20, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
+
         self.setLayout(layout)
 
         self.latest_version_id = None
@@ -250,18 +335,21 @@ class FluxeonUpdater(QWidget):
 
         FLUXEON_DIR.mkdir(parents=True, exist_ok=True)
         DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
-        self.start_update_process()
+
+        # Always show window immediately, then start update process
+        QTimer.singleShot(0, self.start_update_process)
 
     def start_update_process(self):
         self.retry_button.setVisible(False)
-        self.status_label.setText("Initializing...")
-        self.package_progress_label.setText("Finding optimal download server...")
+        self.status_label.setText("Checking for updates...")
+        self.status_label.setStyleSheet("color: #00b894;")
+        self.package_progress_label.setText("")
         self.progress_bar.setValue(0)
         self.latest_version_id = None
         self.package_manifest = []
         self.current_package_index = 0
         self.downloaded_package_paths = []
-        
+
         FLUXEON_DIR.mkdir(parents=True, exist_ok=True)
         DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -269,6 +357,7 @@ class FluxeonUpdater(QWidget):
             self.base_url = find_working_base_url()
             if not self.base_url:
                 QTimer.singleShot(0, lambda: self.status_label.setText("Error: No working Roblox CDN found."))
+                QTimer.singleShot(0, lambda: self.status_label.setStyleSheet("color: #d63031;"))
                 QTimer.singleShot(0, lambda: self.package_progress_label.setText("Check internet or firewall. Then Retry."))
                 QTimer.singleShot(0, lambda: self.retry_button.setVisible(True))
                 return
@@ -276,24 +365,26 @@ class FluxeonUpdater(QWidget):
         threading.Thread(target=find_url_and_continue, daemon=True).start()
 
     def fetch_latest_version(self):
-        self.status_label.setText("Fetching latest Roblox version ID...")
+        self.status_label.setText("Checking for latest Roblox version...")
+        self.status_label.setStyleSheet("color: #00b894;")
         self.package_progress_label.setText("")
         self.progress_bar.setValue(0)
         try:
-            r = http_session.get(VERSION_API_URL, timeout=10) 
+            r = http_session.get(VERSION_API_URL, timeout=10)
             r.raise_for_status()
             data = r.json()
             version_upload = data.get("clientVersionUpload", "")
             if not version_upload:
                 raise ValueError("Client version (clientVersionUpload) not found or empty in API response.")
             self.latest_version_id = version_upload
-            
+
             self.status_label.setText(f"Roblox Version: {self.latest_version_id}")
+            self.status_label.setStyleSheet("color: #00b894;")
             self.check_local_version()
         except Exception as e:
-            self.status_label.setText(f"Failed to get latest Roblox version: {type(e).__name__}")
+            self.status_label.setText(f"Failed to get latest Roblox version.")
+            self.status_label.setStyleSheet("color: #d63031;")
             self.package_progress_label.setText(str(e))
-            print(f"[ERROR] Fetching latest version: {e}")
             self.retry_button.setVisible(True)
 
     def check_local_version(self):
@@ -304,21 +395,24 @@ class FluxeonUpdater(QWidget):
                 local_version = self.local_version_file.read_text().strip()
             except Exception as e:
                 print(f"[WARN] Error reading local version file '{self.local_version_file}': {e}")
-        
+
         core_app_exe_path = CLIENT_DIR / "RobloxPlayerBeta.exe"
-        expected_subdir_path = CLIENT_DIR / "content" 
-        
+        expected_subdir_path = CLIENT_DIR / "content"
+
         if local_version == self.latest_version_id and core_app_exe_path.exists() and expected_subdir_path.exists() and expected_subdir_path.is_dir():
-            self.status_label.setText("Roblox client is up to date.")
-            self.package_progress_label.setText("Launching...")
+            self.status_label.setText("Roblox is already up to date.")
+            self.status_label.setStyleSheet("color: #00b894;")
+            self.package_progress_label.setText("Starting Roblox...")
             self.progress_bar.setValue(100)
-            QTimer.singleShot(100, self.launch_roblox)
+            QTimer.singleShot(1000, self.launch_roblox)
         else:
             if local_version != self.latest_version_id:
                 self.status_label.setText(f"New Roblox version available.")
+                self.status_label.setStyleSheet("color: #0984e3;")
                 self.package_progress_label.setText(f"Updating from {local_version or 'None'} to {self.latest_version_id}...")
             elif not core_app_exe_path.exists() or not expected_subdir_path.exists():
                 self.status_label.setText("Roblox client files seem incomplete.")
+                self.status_label.setStyleSheet("color: #fdcb6e;")
                 self.package_progress_label.setText(f"Re-installing version {self.latest_version_id}...")
             QTimer.singleShot(0, self.fetch_package_manifest)
 
@@ -811,6 +905,7 @@ if __name__ == "__main__":
         QMessageBox.critical(None, "Fluxeon Argument Error", str(data))
         exit_code_val = 1
     elif mode == LaunchModes.PLAYER_URI:
+        # Always show the FluxeonUpdater window, even if up to date, before launching Roblox
         main_window = FluxeonUpdater(launch_uri=str(data), launch_target_is_launcher=True)
     elif mode == LaunchModes.MENU:
         main_window = FluxeonMenuWindow()
@@ -823,7 +918,8 @@ if __name__ == "__main__":
         
         clicked_button = dialog.clickedButton()
         if clicked_button == btn_launch_app:
-            main_window = FluxeonUpdater(launch_uri=None, launch_target_is_launcher=False)
+            # Always show the FluxeonUpdater window, even if up to date
+            main_window = FluxeonUpdater(launch_uri=None, launch_target_is_launcher=True)
         elif clicked_button == btn_open_menu:
             main_window = FluxeonMenuWindow()
         else: 
