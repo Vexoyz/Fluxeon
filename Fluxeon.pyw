@@ -7,6 +7,7 @@ import shutil
 import zipfile
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QProgressBar, QPushButton
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+import threading
 
 LOCALAPPDATA = os.getenv("LOCALAPPDATA")
 FLUXEON_DIR = Path(LOCALAPPDATA) / "Fluxeon"
@@ -16,6 +17,28 @@ ZIP_PATH = FLUXEON_DIR / "RobloxApp.zip"
 
 VERSION_API_URL = "https://clientsettingscdn.roblox.com/v2/client-version/WindowsPlayer"
 ZIP_URL_TEMPLATE = "https://setup.rbxcdn.com/{version_id}-RobloxApp.zip"
+
+BASE_URLS = [
+    "https://setup.rbxcdn.com",
+    "https://setup-aws.rbxcdn.com",
+    "https://setup-ak.rbxcdn.com",
+    "https://roblox-setup.cachefly.net",
+    "https://s3.amazonaws.com/setup.roblox.com"
+]
+VERSION_STUDIO_HASH = "version-012732894899482c"
+
+def find_working_base_url():
+    """
+    Returns the first working base url, or None if all fail.
+    """
+    for url in BASE_URLS:
+        try:
+            resp = requests.get(f"{url}/versionStudio", timeout=5)
+            if resp.status_code == 200 and resp.text.strip() == VERSION_STUDIO_HASH:
+                return url
+        except Exception:
+            continue
+    return None
 
 class DownloaderThread(QThread):
     progress_changed = pyqtSignal(int)
@@ -81,20 +104,33 @@ class FluxeonUpdater(QWidget):
 
         self.latest_version_id = None
         self.local_version_file = CLIENT_DIR / "version.txt"
+        self.base_url = None
 
         self.start_update_process()
 
     def start_update_process(self):
         self.retry_button.setVisible(False)
-        self.status_label.setText("Fetching latest Roblox version...")
+        self.status_label.setText("Finding optimal download server...")
         self.progress_bar.setValue(0)
         self.latest_version_id = None
 
+        # Find working base url in a thread to avoid UI freeze
+        def find_url_and_continue():
+            self.base_url = find_working_base_url()
+            if not self.base_url:
+                self.status_label.setText("No working Roblox CDN found.")
+                self.retry_button.setVisible(True)
+                return
+            QTimer.singleShot(0, self.fetch_latest_version)
+
+        threading.Thread(target=find_url_and_continue, daemon=True).start()
+
+    def fetch_latest_version(self):
+        self.status_label.setText("Fetching latest Roblox version...")
         try:
             r = requests.get(VERSION_API_URL, timeout=10)
             r.raise_for_status()
             data = r.json()
-            # Extract version id from clientVersionUpload (strip "version-")
             version_upload = data.get("clientVersionUpload", "")
             if version_upload.startswith("version-"):
                 self.latest_version_id = version_upload[len("version-") :]
@@ -121,7 +157,8 @@ class FluxeonUpdater(QWidget):
             self.download_zip()
 
     def download_zip(self):
-        url = ZIP_URL_TEMPLATE.format(version_id=self.latest_version_id)
+        # Use the working base url
+        url = f"{self.base_url}/{self.latest_version_id}-RobloxApp.zip"
         self.downloader = DownloaderThread(url, ZIP_PATH)
         self.downloader.progress_changed.connect(self.progress_bar.setValue)
         self.downloader.status_changed.connect(self.status_label.setText)
