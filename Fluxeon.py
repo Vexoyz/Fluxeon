@@ -92,7 +92,12 @@ class FluxeonUpdater(QWidget):
         try:
             r = requests.get(VERSION_URL, timeout=10)
             r.raise_for_status()
-            self.latest_version = r.text.strip()
+            version_str = r.text.strip()
+            # Extract only the GUID part if the version string starts with 'version-'
+            if version_str.startswith("version-"):
+                self.latest_version = version_str[len("version-"):]
+            else:
+                self.latest_version = version_str
             self.status_label.setText(f"Latest version: {self.latest_version}")
             self.check_local_version()
         except Exception as e:
