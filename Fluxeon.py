@@ -5,7 +5,7 @@ import requests
 import subprocess
 import shutil
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QProgressBar, QPushButton
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 
 LOCALAPPDATA = os.getenv("LOCALAPPDATA")
 FLUXEON_DIR = Path(LOCALAPPDATA) / "Fluxeon"
