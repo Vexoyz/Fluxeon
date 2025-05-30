@@ -49,6 +49,9 @@ class DownloaderThread(QThread):
             self.status_changed.emit("Download complete.")
             self.finished.emit(True)
         except Exception as e:
+            import traceback
+            print("Download failed:", e)
+            traceback.print_exc()
             self.status_changed.emit(f"Download failed: {e}")
             self.finished.emit(False)
 
@@ -123,7 +126,9 @@ class FluxeonUpdater(QWidget):
             self.status_label.setText("Running installer silently...")
             self.run_installer()
         else:
-            self.status_label.setText("Download failed.")
+            # Print more info to console for debugging
+            print("Download failed. See above for details.")
+            self.status_label.setText("Download failed. See console for details.")
             self.retry_button.setVisible(True)
 
     def run_installer(self):
