@@ -1,148 +1,186 @@
 import sys
 import os
-import zipfile
+from pathlib import Path
 import requests
 import subprocess
-from pathlib import Path
-from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QLabel, QProgressBar,
-    QPushButton, QMessageBox, QHBoxLayout
-)
+import shutil
+import zipfile
+from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QProgressBar, QPushButton
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-import winreg
 
-# --- Config ---
 LOCALAPPDATA = os.getenv("LOCALAPPDATA")
 FLUXEON_DIR = Path(LOCALAPPDATA) / "Fluxeon"
 CLIENT_DIR = FLUXEON_DIR / "Client"
 MODS_DIR = FLUXEON_DIR / "mods"
-VERSION_FILE = CLIENT_DIR / "version.txt"
+ZIP_PATH = FLUXEON_DIR / "RobloxApp.zip"
 
-# Roblox CDN URLs
 VERSION_API_URL = "https://clientsettingscdn.roblox.com/v2/client-version/WindowsPlayer"
-MANIFEST_URL_TEMPLATE = "https://setup.rbxcdn.com/channel/LIVE/version-{guid}-rbxPkgManifest.txt"
-CDN_URL_TEMPLATE      = "https://setup.rbxcdn.com/version-{guid}-{filename}"
+ZIP_URL_TEMPLATE = "https://setup.rbxcdn.com/{version_id}-RobloxApp.zip"
 
-# Protocol registry
-PROTOCOL_NAME = "roblox-player"
-REGISTRY_PATH = f"Software\\Classes\\{PROTOCOL_NAME}"
-
-class InstallerThread(QThread):
+class DownloaderThread(QThread):
     progress_changed = pyqtSignal(int)
     status_changed = pyqtSignal(str)
     finished = pyqtSignal(bool)
 
+    def __init__(self, url: str, save_path: Path):
+        super().__init__()
+        self.url = url
+        self.save_path = save_path
+
     def run(self):
         try:
-            self.status_changed.emit("Fetching latest version...")
-            headers = {"User-Agent": "Mozilla/5.0"}
-            r = requests.get(VERSION_API_URL, timeout=10, headers=headers)
-            r.raise_for_status()
-            data = r.json()
-            guid = data.get("clientVersionUpload")
-            self.status_changed.emit(f"Version: {guid}")
-
-            # Check existing
-            if VERSION_FILE.exists() and VERSION_FILE.read_text().strip() == guid:
-                self.status_changed.emit("Client up to date.")
-                self.finished.emit(True)
-                return
-
-            # Fetch manifest
-            manifest_url = MANIFEST_URL_TEMPLATE.format(guid=guid)
-            self.status_changed.emit("Downloading manifest...")
-            r = requests.get(manifest_url, headers=headers)
-            r.raise_for_status()
-            parts = r.text.strip().split()
-            # package names are every 4th item starting at index 1
-            filenames = parts[1::4]
-
-            # Download & extract
-            total = len(filenames)
-            CLIENT_DIR.mkdir(parents=True, exist_ok=True)
-            for idx, fname in enumerate(filenames, start=1):
-                self.status_changed.emit(f"Downloading {fname}...")
-                url = CDN_URL_TEMPLATE.format(guid=guid, filename=fname)
-                resp = requests.get(url, stream=True, headers=headers)
-                resp.raise_for_status()
-                zip_path = CLIENT_DIR / fname
-                with open(zip_path, 'wb') as f:
-                    for chunk in resp.iter_content(8192):
-                        if chunk:
-                            f.write(chunk)
-                # extract
-                with zipfile.ZipFile(zip_path, 'r') as z:
-                    z.extractall(CLIENT_DIR)
-                zip_path.unlink()
-                pct = int(idx * 100 / total)
-                self.progress_changed.emit(pct)
-
-            # write version
-            VERSION_FILE.write_text(guid)
-            self.status_changed.emit("Install complete.")
+            self.status_changed.emit("Starting download...")
+            with requests.get(self.url, stream=True) as r:
+                r.raise_for_status()
+                total_length = r.headers.get('content-length')
+                if total_length is None:
+                    self.save_path.write_bytes(r.content)
+                    self.progress_changed.emit(100)
+                else:
+                    total_length = int(total_length)
+                    chunk_size = 8192
+                    downloaded = 0
+                    with open(self.save_path, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=chunk_size):
+                            if chunk:
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                percent = int(downloaded * 100 / total_length)
+                                self.progress_changed.emit(percent)
+            self.status_changed.emit("Download complete.")
             self.finished.emit(True)
         except Exception as e:
-            self.status_changed.emit(f"Error: {e}")
+            import traceback
+            print("Download failed:", e)
+            traceback.print_exc()
+            self.status_changed.emit(f"Download failed: {e}")
             self.finished.emit(False)
 
 class FluxeonUpdater(QWidget):
-    def __init__(self, launch_uri=None):
+    def __init__(self, launch_uri: str):
         super().__init__()
         self.launch_uri = launch_uri
         self.setWindowTitle("Fluxeon Bootstrapper")
-        self.setFixedSize(400, 180)
+        self.setFixedSize(400, 150)
 
         layout = QVBoxLayout()
-        self.label = QLabel("Ready")
-        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.label)
+        self.status_label = QLabel("Initializing...")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.status_label)
 
-        self.bar = QProgressBar()
-        self.bar.setValue(0)
-        layout.addWidget(self.bar)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        layout.addWidget(self.progress_bar)
 
-        self.btn = QPushButton("Install / Update Roblox")
-        self.btn.clicked.connect(self.start_install)
-        layout.addWidget(self.btn)
-
-        self.retry = QPushButton("Retry")
-        self.retry.clicked.connect(self.start_install)
-        self.retry.setVisible(False)
-        layout.addWidget(self.retry)
+        self.retry_button = QPushButton("Retry")
+        self.retry_button.clicked.connect(self.start_update_process)
+        self.retry_button.setVisible(False)
+        layout.addWidget(self.retry_button)
 
         self.setLayout(layout)
 
-    def start_install(self):
-        self.btn.setEnabled(False)
-        self.retry.setVisible(False)
-        self.thread = InstallerThread()
-        self.thread.progress_changed.connect(self.bar.setValue)
-        self.thread.status_changed.connect(self.label.setText)
-        self.thread.finished.connect(self.on_finished)
-        self.bar.setValue(0)
-        self.thread.start()
+        self.latest_version_id = None
+        self.local_version_file = CLIENT_DIR / "version.txt"
 
-    def on_finished(self, ok):
-        if ok:
-            self.label.setText("Launching Roblox…")
-            exe = CLIENT_DIR / "RobloxPlayerBeta.exe"
-            if exe.exists() and self.launch_uri:
-                subprocess.Popen([str(exe), self.launch_uri])
-                QTimer.singleShot(2000, self.close)
+        self.start_update_process()
+
+    def start_update_process(self):
+        self.retry_button.setVisible(False)
+        self.status_label.setText("Fetching latest Roblox version...")
+        self.progress_bar.setValue(0)
+        self.latest_version_id = None
+
+        try:
+            r = requests.get(VERSION_API_URL, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            # Extract version id from clientVersionUpload (strip "version-")
+            version_upload = data.get("clientVersionUpload", "")
+            if version_upload.startswith("version-"):
+                self.latest_version_id = version_upload[len("version-") :]
+            else:
+                self.latest_version_id = version_upload
+            self.status_label.setText(f"Latest version: {self.latest_version_id}")
+            self.check_local_version()
+        except Exception as e:
+            self.status_label.setText(f"Failed to get latest version: {e}")
+            self.retry_button.setVisible(True)
+
+    def check_local_version(self):
+        if self.local_version_file.exists():
+            local_version = self.local_version_file.read_text().strip()
         else:
-            self.retry.setVisible(True)
-        self.btn.setEnabled(True)
+            local_version = None
 
-    def setup_registry(self):
-        # same as before if needed
-        pass
+        if local_version == self.latest_version_id and (CLIENT_DIR / "RobloxPlayerBeta.exe").exists():
+            self.status_label.setText("Client is up to date. Launching Roblox...")
+            self.progress_bar.setValue(100)
+            self.launch_roblox()
+        else:
+            self.status_label.setText("Updating Roblox client...")
+            self.download_zip()
+
+    def download_zip(self):
+        url = ZIP_URL_TEMPLATE.format(version_id=self.latest_version_id)
+        self.downloader = DownloaderThread(url, ZIP_PATH)
+        self.downloader.progress_changed.connect(self.progress_bar.setValue)
+        self.downloader.status_changed.connect(self.status_label.setText)
+        self.downloader.finished.connect(self.on_zip_download_finished)
+        self.downloader.start()
+
+    def on_zip_download_finished(self, success: bool):
+        if success:
+            self.status_label.setText("Extracting client files...")
+            QTimer.singleShot(100, self.extract_zip)
+        else:
+            # Print more info to console for debugging
+            print("Download failed. See above for details.")
+            self.status_label.setText("Download failed. See console for details.")
+            self.retry_button.setVisible(True)
+
+    def extract_zip(self):
+        try:
+            # Ensure client dir exists and is empty
+            if CLIENT_DIR.exists():
+                shutil.rmtree(CLIENT_DIR)
+            CLIENT_DIR.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
+                zip_ref.extractall(CLIENT_DIR)
+            # Write version file after successful extraction
+            self.local_version_file.write_text(self.latest_version_id)
+            self.status_label.setText("Extraction complete. Launching Roblox...")
+            self.launch_roblox()
+        except Exception as e:
+            self.status_label.setText(f"Extraction failed: {e}")
+            self.retry_button.setVisible(True)
+
+    def launch_roblox(self):
+        player_exe = CLIENT_DIR / "RobloxPlayerBeta.exe"
+        if not player_exe.exists():
+            self.status_label.setText("RobloxPlayerBeta.exe not found after install.")
+            self.retry_button.setVisible(True)
+            return
+
+        # Launch RobloxPlayerBeta.exe with the original launch URI as argument
+        try:
+            subprocess.Popen([str(player_exe), self.launch_uri])
+            self.status_label.setText("Roblox launched successfully!")
+            self.retry_button.setVisible(False)
+            # Close the bootstrapper UI after launching
+            QTimer.singleShot(2000, self.close)
+        except Exception as e:
+            self.status_label.setText(f"Failed to launch Roblox: {e}")
+            self.retry_button.setVisible(True)
+
+def parse_args():
+    if len(sys.argv) < 3 or sys.argv[1] != "-player":
+        print("Usage: Fluxeon.py -player <launch_uri>")
+        sys.exit(1)
+    return sys.argv[2]
 
 if __name__ == "__main__":
-    # parse -player arg
-    uri = None
-    if len(sys.argv) >= 3 and sys.argv[1] == "-player":
-        uri = sys.argv[2]
+    launch_uri = parse_args()
     app = QApplication(sys.argv)
-    w = FluxeonUpdater(uri)
-    w.show()
+    window = FluxeonUpdater(launch_uri)
+    window.show()
     sys.exit(app.exec())
