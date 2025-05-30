@@ -22,6 +22,52 @@ import platform
 import hashlib
 import time # For sleep
 
+# --- WebView2 detection and install helpers ---
+def is_webview2_installed():
+    """Check if WebView2 runtime is installed by checking registry keys."""
+    try:
+        import winreg
+        keys = [
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
+            (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}")
+        ]
+        for root, path in keys:
+            try:
+                with winreg.OpenKey(root, path):
+                    return True
+            except FileNotFoundError:
+                continue
+    except Exception as e:
+        print(f"[WARN] Could not check WebView2 registry: {e}")
+    return False
+
+def install_webview2_runtime(client_dir: Path):
+    """Extract and run WebView2 installer if not installed."""
+    installer_zip = DOWNLOADS_DIR / "WebView2RuntimeInstaller.zip"
+    installer_dir = client_dir / "WebView2Runtime"
+    installer_exe = installer_dir / "MicrosoftEdgeWebview2Setup.exe"
+    if not installer_zip.exists():
+        print("[WARN] WebView2RuntimeInstaller.zip not found, skipping WebView2 install.")
+        return
+    try:
+        if not installer_dir.exists():
+            installer_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(installer_zip, 'r') as zip_ref:
+            zip_ref.extractall(installer_dir)
+        if installer_exe.exists():
+            print("[INFO] Running WebView2 installer...")
+            subprocess.run([str(installer_exe), "/silent", "/install"], cwd=installer_dir, timeout=120)
+            print("[INFO] WebView2 installer finished.")
+        else:
+            print("[WARN] WebView2 installer exe not found after extraction.")
+    except Exception as e:
+        print(f"[ERROR] Failed to install WebView2: {e}")
+    try:
+        if installer_dir.exists():
+            shutil.rmtree(installer_dir)
+    except Exception as e:
+        print(f"[WARN] Could not clean up WebView2 installer dir: {e}")
+
 LOCALAPPDATA = os.getenv("LOCALAPPDATA")
 FLUXEON_DIR = Path(LOCALAPPDATA) / "Fluxeon"
 CLIENT_DIR = FLUXEON_DIR / "Client"
@@ -689,8 +735,21 @@ class FluxeonUpdater(QWidget):
             self.status_label.setText("Roblox client updated successfully!")
             self.package_progress_label.setText("Launching...")
             self.progress_bar.setValue(100)
-            QTimer.singleShot(100, self.launch_roblox)
 
+            # --- WebView2 check and install ---
+            if not is_webview2_installed():
+                self.status_label.setText("Installing WebView2 Runtime...")
+                self.package_progress_label.setText("WebView2 is required for Roblox. Installing now...")
+                QApplication.processEvents()
+                install_webview2_runtime(CLIENT_DIR)
+                if is_webview2_installed():
+                    self.package_progress_label.setText("WebView2 installed successfully.")
+                else:
+                    self.package_progress_label.setText("WebView2 installation failed or was skipped.")
+                QApplication.processEvents()
+            # --- End WebView2 check ---
+
+            QTimer.singleShot(100, self.launch_roblox)
         except PermissionError as pe: # Catch PermissionError specifically
             self.status_label.setText("Client update process failed.")
             self.package_progress_label.setText(f"Error: PermissionError - {pe.strerror}. File: {pe.filename}")
@@ -731,17 +790,22 @@ class FluxeonUpdater(QWidget):
             print(f"[DEBUG] Launching: {' '.join(args_list)}")
             creation_flags = 0
             if platform.system() == "Windows":
-                creation_flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000) # DETACHED_PROCESS is 0x00000008
-            
+                creation_flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
             subprocess.Popen(args_list, creationflags=creation_flags)
             self.package_progress_label.setText(f"{player_exe_name} launched!")
             self.retry_button.setVisible(False)
-            QTimer.singleShot(1500, self.close)
+            # --- Show menu after launching Roblox ---
+            QTimer.singleShot(1500, self.show_menu_and_close)
         except Exception as e:
             self.status_label.setText(f"Failed to launch {player_exe_name}.")
             self.package_progress_label.setText(f"Error: {e}")
             print(f"[ERROR] Launch failed: {e}")
             self.retry_button.setVisible(True)
+
+    def show_menu_and_close(self):
+        self.close()
+        self.menu_window = FluxeonMenuWindow()
+        self.menu_window.show()
 
 class FluxeonMenuWindow(QWidget):
     # ... (Same as before) ...
@@ -907,6 +971,7 @@ if __name__ == "__main__":
     elif mode == LaunchModes.PLAYER_URI:
         # Always show the FluxeonUpdater window, even if up to date, before launching Roblox
         main_window = FluxeonUpdater(launch_uri=str(data), launch_target_is_launcher=True)
+        # Show menu after updater finishes (handled in FluxeonUpdater)
     elif mode == LaunchModes.MENU:
         main_window = FluxeonMenuWindow()
     elif mode == LaunchModes.CHOICE:
@@ -920,6 +985,7 @@ if __name__ == "__main__":
         if clicked_button == btn_launch_app:
             # Always show the FluxeonUpdater window, even if up to date
             main_window = FluxeonUpdater(launch_uri=None, launch_target_is_launcher=True)
+            # Show menu after updater finishes (handled in FluxeonUpdater)
         elif clicked_button == btn_open_menu:
             main_window = FluxeonMenuWindow()
         else: 
