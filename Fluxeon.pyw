@@ -1,3 +1,9 @@
+# Fluxeon Bootstrapper
+# Version: 1.0.0
+# https://raw.githubusercontent.com/Vexoyz/Fluxeon/main/Fluxeon.pyw
+
+FLUXEON_VERSION = "1.0.1"
+
 import sys
 import os
 from pathlib import Path
@@ -8,6 +14,7 @@ import zipfile
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QProgressBar, QPushButton
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 import threading
+import tempfile
 
 LOCALAPPDATA = os.getenv("LOCALAPPDATA")
 FLUXEON_DIR = Path(LOCALAPPDATA) / "Fluxeon"
@@ -26,6 +33,8 @@ BASE_URLS = [
     "https://s3.amazonaws.com/setup.roblox.com"
 ]
 VERSION_STUDIO_HASH = "version-012732894899482c"
+
+FLUXEON_MAIN_SCRIPT_URL = "https://raw.githubusercontent.com/Vexoyz/Fluxeon/main/Fluxeon.pyw"
 
 def find_working_base_url():
     """
@@ -214,6 +223,37 @@ def parse_args():
         print("Usage: Fluxeon.py -player <launch_uri>")
         sys.exit(1)
     return sys.argv[2]
+
+def get_version_from_source(source: str) -> str:
+    """
+    Extracts the FLUXEON_VERSION from the given Python source code string.
+    """
+    import re
+    match = re.search(r'FLUXEON_VERSION\s*=\s*["\']([^"\']+)["\']', source)
+    if match:
+        return match.group(1)
+    return None
+
+def auto_update():
+    """
+    Checks for a newer version of this script and updates if necessary.
+    """
+    try:
+        resp = requests.get(FLUXEON_MAIN_SCRIPT_URL, timeout=10)
+        resp.raise_for_status()
+        remote_source = resp.text
+        remote_version = get_version_from_source(remote_source)
+        if remote_version and remote_version != FLUXEON_VERSION:
+            print(f"Updating Fluxeon: {FLUXEON_VERSION} -> {remote_version}")
+            script_path = Path(__file__)
+            script_path.write_text(remote_source, encoding="utf-8")
+            print("Update complete. Restarting...")
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+    except Exception as e:
+        print(f"Auto-update failed: {e}")
+
+# --- AUTO-UPDATE CHECK ---
+auto_update()
 
 if __name__ == "__main__":
     launch_uri = parse_args()
